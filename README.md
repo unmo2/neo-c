@@ -744,13 +744,18 @@ cpm leak
 cpm clean
 ```
 
-`cpm new hello` creates `Neo.toml`, `lib/`, `src/main.nc`, and `.gitignore`.
+`cpm new hello` creates `Neo.toml`, `lib/`, `src/common.h`, `src/main.nc`, and
+`.gitignore`.
 `lib/` contains project-local copies of `neo-c.h`, `neo-c-str.nc`,
 `neo-c-str.h`, `neo-c-libc.h`, `neo-c-net.h`, and `neo-c-pthread.h`.
 `cpm build` compiles `lib/neo-c-str.nc` into `target/debug/neo-c-str.c` and
 `target/debug/neo-c-str.o`, then links that project-local object.
 `cpm build` compiles every `.nc` file under `src` to generated C and objects
 under `target/debug`, then links `target/debug/<package-name>` with `neo-c`.
+When `src/common.h` exists, cpm automatically includes it at the `.nc` source
+stage before every `src/*.nc` file. Put declarations shared by files under
+`src/` there. The generated template includes `<neo-c.h>` in `src/common.h`,
+so declarations can use neo-c aliases such as `string`.
 `cpm build` runs source transpile/compile jobs in parallel by default and keeps
 the final link step serial. Use `CPM_JOBS=1 cpm build` or `[build] jobs = 1`
 for a serial build, or set a larger value such as `CPM_JOBS=4` to choose the

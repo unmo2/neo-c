@@ -890,6 +890,39 @@ static void generated_c_path(char* out, size_t out_size, const char* obj_path)
     }
 }
 
+static int should_wrap_with_common_header(const char* src)
+{
+    return file_exists("src/common.h")
+        && strncmp(src, "src/", 4) == 0
+        && has_suffix(src, ".nc");
+}
+
+static void prepare_source_path(char* out, size_t out_size, const char* src)
+{
+    if(!should_wrap_with_common_header(src)) {
+        strncpy(out, src, out_size - 1);
+        out[out_size - 1] = '\0';
+        return;
+    }
+
+    snprintf(out, out_size, "target/debug/.cpm-src/%s", base_name(src));
+    if(strlen(out) >= out_size - 1) {
+        die("cpm: wrapper path too long");
+    }
+    ensure_parent_dir(out);
+    {
+        char text[PATH_MAX_LEN * 2];
+        snprintf(text, sizeof(text),
+            "#include \"../../../src/common.h\"\n"
+            "#include \"../../../%s\"\n",
+            src);
+        if(strlen(text) >= sizeof(text) - 1) {
+            die("cpm: wrapper source too long");
+        }
+        write_file(out, text);
+    }
+}
+
 static void append_object_paths(char* cmd, size_t cmd_size, struct SourceList* sources,
     const struct Manifest* m)
 {
@@ -1087,6 +1120,7 @@ static int cmd_build_parallel_with_flags(const char* extra_flags, int optimize,
 
     for(i = 0; i < sources->count; i++) {
         char obj_path_buf[PATH_MAX_LEN];
+        char build_src[PATH_MAX_LEN];
         char q_src[PATH_MAX_LEN * 2];
         char q_obj[PATH_MAX_LEN * 2];
 
@@ -1097,7 +1131,8 @@ static int cmd_build_parallel_with_flags(const char* extra_flags, int optimize,
             obj_path_buf);
         ensure_parent_dir(obj_path_buf);
         ensure_parent_dir(jobs[job_count].c_path);
-        shell_quote(q_src, sizeof(q_src), sources->path[i]);
+        prepare_source_path(build_src, sizeof(build_src), sources->path[i]);
+        shell_quote(q_src, sizeof(q_src), build_src);
         shell_quote(q_obj, sizeof(q_obj), obj_path_buf);
         backup_generated_file(jobs[job_count].generated_base,
             jobs[job_count].backup_path, sizeof(jobs[job_count].backup_path));
@@ -1157,6 +1192,7 @@ static int cmd_bare_build_parallel_with_flags(const char* extra_flags, int optim
 
     for(i = 0; i < sources->count; i++) {
         char obj_path_buf[PATH_MAX_LEN];
+        char build_src[PATH_MAX_LEN];
         char q_src[PATH_MAX_LEN * 2];
         char q_c_path[PATH_MAX_LEN * 2];
         char q_obj[PATH_MAX_LEN * 2];
@@ -1170,7 +1206,8 @@ static int cmd_bare_build_parallel_with_flags(const char* extra_flags, int optim
         strcpy(compile_jobs[i].c_path, transpile_jobs[i].c_path);
         ensure_parent_dir(obj_path_buf);
         ensure_parent_dir(transpile_jobs[i].c_path);
-        shell_quote(q_src, sizeof(q_src), sources->path[i]);
+        prepare_source_path(build_src, sizeof(build_src), sources->path[i]);
+        shell_quote(q_src, sizeof(q_src), build_src);
         shell_quote(q_c_path, sizeof(q_c_path), transpile_jobs[i].c_path);
         shell_quote(q_obj, sizeof(q_obj), obj_path_buf);
         backup_generated_file(transpile_jobs[i].generated_base,
@@ -1221,6 +1258,7 @@ static int cmd_bare_build_with_flags(const char* extra_flags, int optimize,
         char obj_path_buf[PATH_MAX_LEN];
         char generated_base[PATH_MAX_LEN];
         char c_path_buf[PATH_MAX_LEN];
+        char build_src[PATH_MAX_LEN];
         char q_src[PATH_MAX_LEN * 2];
         char q_generated_base[PATH_MAX_LEN * 2];
         char q_c_path[PATH_MAX_LEN * 2];
@@ -1231,7 +1269,8 @@ static int cmd_bare_build_with_flags(const char* extra_flags, int optimize,
         generated_c_path(c_path_buf, sizeof(c_path_buf), obj_path_buf);
         ensure_parent_dir(obj_path_buf);
         ensure_parent_dir(c_path_buf);
-        shell_quote(q_src, sizeof(q_src), sources->path[i]);
+        prepare_source_path(build_src, sizeof(build_src), sources->path[i]);
+        shell_quote(q_src, sizeof(q_src), build_src);
         shell_quote(q_generated_base, sizeof(q_generated_base), generated_base);
         shell_quote(q_c_path, sizeof(q_c_path), c_path_buf);
         shell_quote(q_obj, sizeof(q_obj), obj_path_buf);
@@ -1323,6 +1362,19 @@ static void write_main_source(void)
         "}\n");
 }
 
+static void write_common_header(void)
+{
+    write_file("src/common.h",
+        "#ifndef CPM_COMMON_H\n"
+        "#define CPM_COMMON_H\n"
+        "\n"
+        "#include <neo-c.h>\n"
+        "\n"
+        "/* Put declarations shared by src/*.nc files here. */\n"
+        "\n"
+        "#endif\n");
+}
+
 static int cmd_init(const char* name)
 {
     if(file_exists("Neo.toml")) {
@@ -1333,6 +1385,9 @@ static int cmd_init(const char* name)
     write_manifest(name);
     if(!file_exists("src/main.nc")) {
         write_main_source();
+    }
+    if(!file_exists("src/common.h")) {
+        write_common_header();
     }
     if(!file_exists(".gitignore")) {
         write_file(".gitignore", "target/\n");
@@ -1432,6 +1487,7 @@ static int cmd_build_with_flags(const char* extra_flags, int optimize)
         char generated_base[PATH_MAX_LEN];
         char c_path_buf[PATH_MAX_LEN];
         char backup_path[PATH_MAX_LEN];
+        char build_src[PATH_MAX_LEN];
         char q_src[PATH_MAX_LEN * 2];
         char q_obj[PATH_MAX_LEN * 2];
 
@@ -1440,7 +1496,8 @@ static int cmd_build_with_flags(const char* extra_flags, int optimize)
         generated_c_path(c_path_buf, sizeof(c_path_buf), obj_path_buf);
         ensure_parent_dir(obj_path_buf);
         ensure_parent_dir(c_path_buf);
-        shell_quote(q_src, sizeof(q_src), sources.path[i]);
+        prepare_source_path(build_src, sizeof(build_src), sources.path[i]);
+        shell_quote(q_src, sizeof(q_src), build_src);
         shell_quote(q_obj, sizeof(q_obj), obj_path_buf);
         backup_generated_file(generated_base, backup_path, sizeof(backup_path));
         if(is_runtime_source(sources.path[i])) {

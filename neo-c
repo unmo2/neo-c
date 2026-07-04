@@ -32,6 +32,7 @@ no_rm_pp=true
 bare=false
 
 expect_target=false
+expect_include=false
 compile_only=false
 all_object_file=true
 m5stack=false
@@ -45,6 +46,12 @@ for arg in "$@"; do
   if [ "$expect_target" = true ]; then
     target="$arg"
     expect_target=false
+    continue
+  fi
+  if [ "$expect_include" = true ]; then
+    ncc_opts+=("-include")
+    ncc_opts+=("$arg")
+    expect_include=false
     continue
   fi
 
@@ -157,6 +164,12 @@ for arg in "$@"; do
       ;;
     -o)
       expect_target=true
+      ;;
+    -include)
+      expect_include=true
+      ;;
+    -include*)
+      ncc_opts+=("$arg")
       ;;
     -c)
       compile_only=true

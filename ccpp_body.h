@@ -702,6 +702,7 @@ struct PPOpts {
     size_t nonce_paths;
     const char **cmd_defs; size_t ncmd_defs;
     const char **cmd_undefs; size_t ncmd_undefs;
+    const char **cmd_includes; size_t ncmd_includes;
     // Track currently-open include chain to avoid cycles (A->B->A...)
     const char **open_stack;
     size_t nopen_stack;
@@ -5442,6 +5443,8 @@ static void preprocess_file(const char *path, FILE *in, const char *curdir, cons
 MacroTable tbl_global;
 PPOpts opts_global = {0};
 
+void incldue_file_neo_c(char* path, int quoted, FILE* out);
+
 void init_ccpp(int argc, char** argv)
 {
     bool found_clang = false;
@@ -5458,6 +5461,17 @@ void init_ccpp(int argc, char** argv)
             if (dir) {
                 opts_global.incdirs = (const char**)xrealloc((void*)opts_global.incdirs, sizeof(char*)*(opts_global.nincdirs+1));
                 opts_global.incdirs[opts_global.nincdirs++] = dir;
+            }
+        } else if (strcmp(a, "-include") == 0 || strncmp(a, "-include", 8) == 0) {
+            const char *path = NULL;
+            if (strcmp(a, "-include") == 0) {
+                if (i+1 < argc) path = argv[++i];
+            } else {
+                path = a + 8;
+            }
+            if (path && *path) {
+                opts_global.cmd_includes = (const char**)xrealloc((void*)opts_global.cmd_includes, sizeof(char*)*(opts_global.ncmd_includes+1));
+                opts_global.cmd_includes[opts_global.ncmd_includes++] = path;
             }
         } else if (a[0]=='-' && a[1]=='D') {
             const char *def = a+2;
@@ -5591,6 +5605,7 @@ void preprocess_file_neo_c(const char *path, FILE *out)
 {
     const char *curdir;
     FILE* in = fopen(path, "r");
+    size_t i;
     if (!in) die("fopen");
     curdir = dirname_dup(path);
 #ifdef CCPP_BARE
@@ -5620,6 +5635,9 @@ void preprocess_file_neo_c(const char *path, FILE *out)
           "typedef int __darwin_wint_t;\n",
           out);
 #endif
+    for (i = 0; i < opts_global.ncmd_includes; i++) {
+        incldue_file_neo_c((char*)opts_global.cmd_includes[i], 0, out);
+    }
     preprocess_file(path, in, curdir, &opts_global, out, &tbl_global);
 }
 

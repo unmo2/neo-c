@@ -23,8 +23,13 @@ test: cpm
 	cd /tmp/neo-cpm-test && "$(CPM_BIN)" new hello
 	test -f /tmp/neo-cpm-test/hello/lib/neo-c.h
 	test -f /tmp/neo-cpm-test/hello/lib/neo-c-str.nc
+	test -f /tmp/neo-cpm-test/hello/src/common.h
+	printf '#ifndef CPM_COMMON_H\n#define CPM_COMMON_H\n\n#include <neo-c.h>\n\nstring fun();\nint add(int a, int b);\n\n#endif\n' > /tmp/neo-cpm-test/hello/src/common.h
+	printf '#include <neo-c.h>\n\nstring fun()\n{\n    return s"Hello from neo-c cpm";\n}\n\nint add(int a, int b)\n{\n    return a + b;\n}\n' > /tmp/neo-cpm-test/hello/src/add.nc
+	printf '#include <neo-c.h>\n\nint main(int argc, char** argv)\n{\n    if(add(20, 22) != 42) {\n        return 1;\n    }\n    puts(fun());\n    return 0;\n}\n' > /tmp/neo-cpm-test/hello/src/main.nc
 	cd /tmp/neo-cpm-test/hello && CPM_NEOC="$(NEOC_BIN)" "$(CPM_BIN)" build
 	test -f /tmp/neo-cpm-test/hello/target/debug/hello.c
+	test -f /tmp/neo-cpm-test/hello/target/debug/src_add.c
 	test -f /tmp/neo-cpm-test/hello/target/debug/neo-c-str.c
 	test -f /tmp/neo-cpm-test/hello/target/debug/neo-c-str.o
 	test ! -f /tmp/neo-cpm-test/hello/main.c

@@ -1,0 +1,13 @@
+[package]
+name = "hello"
+version = "1.0.0"
+
+[build]
+src = "src/main.nc"
+out = "target/debug/hello"
+neoc = "neo-c"
+neoc_flags = "-I. -Ilib"
+ldflags = ""
+jobs = 0
+lowmem = false
+strip = false
