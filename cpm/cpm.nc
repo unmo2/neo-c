@@ -27,6 +27,7 @@
 #define LEAK_RUN_PREFIX "env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=99 LSAN_OPTIONS=exitcode=99"
 
 static char g_exe_dir[PATH_MAX_LEN] = "";
+static int g_common_header_enabled = 1;
 
 struct Manifest {
     char name[VALUE_MAX_LEN];
@@ -45,6 +46,7 @@ struct Manifest {
     int jobs;
     int lowmem;
     int bare;
+    int common_header;
     int strip;
     int strip_sections;
 };
@@ -642,6 +644,7 @@ static void manifest_defaults(struct Manifest* m)
     strcpy(m->cflags, "-Oz -ffreestanding -fno-asynchronous-unwind-tables -fno-ident -fno-stack-protector -fno-unwind-tables -nostdlib");
     strcpy(m->linker, "ld");
     strcpy(m->linker_flags, "-nostdlib -static -n --build-id=none");
+    m->common_header = 1;
     m->strip = 0;
 }
 
@@ -745,6 +748,11 @@ static void read_manifest(struct Manifest* m)
                 char unquoted[VALUE_MAX_LEN];
                 unquote_value(unquoted, sizeof(unquoted), value);
                 m->bare = parse_bool_value(unquoted);
+            }
+            else if(strcmp(section, "build") == 0 && strcmp(key, "common_header") == 0) {
+                char unquoted[VALUE_MAX_LEN];
+                unquote_value(unquoted, sizeof(unquoted), value);
+                m->common_header = parse_bool_value(unquoted);
             }
             else if(strcmp(section, "build") == 0 && strcmp(key, "strip") == 0) {
                 char unquoted[VALUE_MAX_LEN];
@@ -1353,7 +1361,8 @@ static void generated_c_path(char* out, size_t out_size, const char* obj_path)
 
 static int should_wrap_with_common_header(const char* src)
 {
-    return file_exists("src/common.h")
+    return g_common_header_enabled
+        && file_exists("src/common.h")
         && strncmp(src, "src/", 4) == 0
         && has_suffix(src, ".nc");
 }
@@ -1895,7 +1904,10 @@ static int cmd_build_with_flags(const char* extra_flags, int optimize)
     build_extra_flags(neoc_extra_flags, sizeof(neoc_extra_flags), extra_flags, &m);
     mkdir_p("target/debug");
     collect_manifest_sources(&sources, &m);
-    generate_common_header(&sources, &m);
+    g_common_header_enabled = m.common_header;
+    if(m.common_header) {
+        generate_common_header(&sources, &m);
+    }
     shell_quote(q_neoc, sizeof(q_neoc), m.neoc);
 
     if(m.bare) {

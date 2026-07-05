@@ -55,6 +55,8 @@ includes it at the `.nc` source stage before each `src/*.nc` file. This lets
 project sources use types and functions defined in other source files without
 hand-written prototypes. Put manual shared declarations in a separate header
 and include that from source files.
+Set `[build] common_header = false` for projects that already manage their own
+cross-file declarations or cannot safely include a generated common header.
 Transpile/compile jobs run in parallel by default, using the number of online
 CPUs. The final link step stays serial. Set `[build] jobs = 1` or
 `CPM_JOBS=1` to force serial builds, or set a larger value to choose the

@@ -758,6 +758,8 @@ includes it at the `.nc` source stage before every `src/*.nc` file. This lets
 files under `src/` use types and functions defined in other source files
 without hand-written prototypes. Put manual shared declarations in a separate
 header and include that from source files.
+Set `[build] common_header = false` for projects that already manage their own
+cross-file declarations or cannot safely include a generated common header.
 `cpm build` runs source transpile/compile jobs in parallel by default and keeps
 the final link step serial. Use `CPM_JOBS=1 cpm build` or `[build] jobs = 1`
 for a serial build, or set a larger value such as `CPM_JOBS=4` to choose the

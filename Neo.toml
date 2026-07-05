@@ -9,4 +9,5 @@ out = "target/debug/ncc"
 neoc = "./neo-c"
 neoc_flags = "-I."
 ldflags = "-lutil -ldl -lm -lrt"
+common_header = false
 strip = true
