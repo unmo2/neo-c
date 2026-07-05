@@ -752,10 +752,12 @@ cpm clean
 `target/debug/neo-c-str.o`, then links that project-local object.
 `cpm build` compiles every `.nc` file under `src` to generated C and objects
 under `target/debug`, then links `target/debug/<package-name>` with `neo-c`.
-When `src/common.h` exists, cpm automatically includes it at the `.nc` source
-stage before every `src/*.nc` file. Put declarations shared by files under
-`src/` there. The generated template includes `<neo-c.h>` in `src/common.h`,
-so declarations can use neo-c aliases such as `string`.
+`cpm build` regenerates `src/common.h` from top-level `typedef`, `struct`,
+`union`, `enum`, and function definitions in `src/*.nc`, then automatically
+includes it at the `.nc` source stage before every `src/*.nc` file. This lets
+files under `src/` use types and functions defined in other source files
+without hand-written prototypes. Put manual shared declarations in a separate
+header and include that from source files.
 `cpm build` runs source transpile/compile jobs in parallel by default and keeps
 the final link step serial. Use `CPM_JOBS=1 cpm build` or `[build] jobs = 1`
 for a serial build, or set a larger value such as `CPM_JOBS=4` to choose the

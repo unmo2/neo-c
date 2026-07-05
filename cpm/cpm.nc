@@ -14,6 +14,7 @@
 #define SOURCES_MAX_LEN 4096
 #define MAX_SOURCES 256
 #define CMD_MAX_LEN (PATH_MAX_LEN * 16)
+#define COMMON_HEADER_MAX_LEN 65536
 
 #ifndef CPM_DEFAULT_STDLIB_DIR
 #define CPM_DEFAULT_STDLIB_DIR ""
@@ -150,6 +151,16 @@ static void write_file(const char* path, const char* text)
     if(fclose(fp) != 0) {
         die_errno(path);
     }
+}
+
+static void append_text(char* out, size_t out_size, const char* text)
+{
+    size_t len = strlen(out);
+    size_t text_len = strlen(text);
+    if(len + text_len + 1 >= out_size) {
+        die("cpm: generated common.h is too large");
+    }
+    strcat(out, text);
 }
 
 static void copy_file(const char* src, const char* dst)
@@ -874,6 +885,456 @@ static int is_runtime_source(const char* src)
     return strcmp(base_name(src), "neo-c-str.nc") == 0;
 }
 
+static void strip_line_comment(char* line)
+{
+    int in_dq = 0;
+    int in_sq = 0;
+    int escaped = 0;
+    size_t i;
+    for(i = 0; line[i] != '\0'; i++) {
+        char c = line[i];
+        if(escaped) {
+            escaped = 0;
+            continue;
+        }
+        if(c == '\\' && (in_dq || in_sq)) {
+            escaped = 1;
+            continue;
+        }
+        if(c == '"' && !in_sq) {
+            in_dq = !in_dq;
+            continue;
+        }
+        if(c == '\'' && !in_dq) {
+            in_sq = !in_sq;
+            continue;
+        }
+        if(!in_dq && !in_sq && c == '/' && line[i + 1] == '/') {
+            line[i] = '\0';
+            return;
+        }
+    }
+}
+
+static int count_braces_in_line(const char* line)
+{
+    int delta = 0;
+    int in_dq = 0;
+    int in_sq = 0;
+    int escaped = 0;
+    size_t i;
+    for(i = 0; line[i] != '\0'; i++) {
+        char c = line[i];
+        if(escaped) {
+            escaped = 0;
+            continue;
+        }
+        if(c == '\\' && (in_dq || in_sq)) {
+            escaped = 1;
+            continue;
+        }
+        if(c == '"' && !in_sq) {
+            in_dq = !in_dq;
+            continue;
+        }
+        if(c == '\'' && !in_dq) {
+            in_sq = !in_sq;
+            continue;
+        }
+        if(!in_dq && !in_sq) {
+            if(c == '{') {
+                delta++;
+            }
+            else if(c == '}') {
+                delta--;
+            }
+        }
+    }
+    return delta;
+}
+
+static char* find_top_level_semicolon(char* line)
+{
+    int depth = 0;
+    int in_dq = 0;
+    int in_sq = 0;
+    int escaped = 0;
+    size_t i;
+    for(i = 0; line[i] != '\0'; i++) {
+        char c = line[i];
+        if(escaped) {
+            escaped = 0;
+            continue;
+        }
+        if(c == '\\' && (in_dq || in_sq)) {
+            escaped = 1;
+            continue;
+        }
+        if(c == '"' && !in_sq) {
+            in_dq = !in_dq;
+            continue;
+        }
+        if(c == '\'' && !in_dq) {
+            in_sq = !in_sq;
+            continue;
+        }
+        if(!in_dq && !in_sq) {
+            if(c == '{') {
+                depth++;
+            }
+            else if(c == '}') {
+                if(depth > 0) {
+                    depth--;
+                }
+            }
+            else if(c == ';' && depth == 0) {
+                return line + i;
+            }
+        }
+    }
+    return NULL;
+}
+
+static void normalize_space(char* s)
+{
+    char tmp[VALUE_MAX_LEN * 4];
+    size_t i;
+    size_t j = 0;
+    int pending_space = 0;
+    for(i = 0; s[i] != '\0'; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if(isspace(c)) {
+            pending_space = j > 0;
+            continue;
+        }
+        if(pending_space && j + 1 < sizeof(tmp)) {
+            tmp[j++] = ' ';
+        }
+        pending_space = 0;
+        if(j + 1 < sizeof(tmp)) {
+            tmp[j++] = (char)c;
+        }
+    }
+    tmp[j] = '\0';
+    strncpy(s, tmp, VALUE_MAX_LEN * 4 - 1);
+    s[VALUE_MAX_LEN * 4 - 1] = '\0';
+}
+
+static int extract_function_name(const char* signature, char* out, size_t out_size)
+{
+    const char* lp = strchr(signature, '(');
+    const char* p;
+    const char* end;
+    size_t n;
+    if(lp == NULL) {
+        return 0;
+    }
+    p = lp;
+    while(p > signature && isspace((unsigned char)p[-1])) {
+        p--;
+    }
+    end = p;
+    while(p > signature && (isalnum((unsigned char)p[-1]) || p[-1] == '_')) {
+        p--;
+    }
+    if(end <= p) {
+        return 0;
+    }
+    n = (size_t)(end - p);
+    if(n + 1 > out_size) {
+        return 0;
+    }
+    memcpy(out, p, n);
+    out[n] = '\0';
+    return 1;
+}
+
+static int is_control_like_signature(const char* signature)
+{
+    char name[128];
+    if(!extract_function_name(signature, name, sizeof(name))) {
+        return 1;
+    }
+    return strcmp(name, "if") == 0
+        || strcmp(name, "for") == 0
+        || strcmp(name, "while") == 0
+        || strcmp(name, "switch") == 0
+        || strcmp(name, "catch") == 0
+        || strcmp(name, "sizeof") == 0;
+}
+
+static int prototype_already_added(const char* generated, const char* proto)
+{
+    return strstr(generated, proto) != NULL;
+}
+
+static int starts_with_word(const char* s, const char* word)
+{
+    size_t n = strlen(word);
+    return strncmp(s, word, n) == 0
+        && !(isalnum((unsigned char)s[n]) || s[n] == '_');
+}
+
+static int starts_type_declaration(const char* s)
+{
+    return starts_with_word(s, "typedef")
+        || starts_with_word(s, "struct")
+        || starts_with_word(s, "union")
+        || starts_with_word(s, "enum");
+}
+
+static int is_named_forward_declaration(const char* decl)
+{
+    char tmp[VALUE_MAX_LEN * 4];
+    char* p;
+    char* word;
+    char* name;
+
+    strncpy(tmp, decl, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+    normalize_space(tmp);
+    p = trim(tmp);
+    word = strtok(p, " \t");
+    name = strtok(NULL, " \t;");
+    if(word == NULL || name == NULL) {
+        return 0;
+    }
+    if(strcmp(word, "struct") != 0 && strcmp(word, "union") != 0 && strcmp(word, "enum") != 0) {
+        return 0;
+    }
+    return strtok(NULL, " \t;") == NULL;
+}
+
+static void append_type_declaration(char* generated, size_t generated_size,
+    const char* candidate)
+{
+    char decl[VALUE_MAX_LEN * 4];
+    char* semi;
+
+    strncpy(decl, candidate, sizeof(decl) - 1);
+    decl[sizeof(decl) - 1] = '\0';
+    normalize_space(decl);
+    semi = find_top_level_semicolon(decl);
+    if(semi == NULL) {
+        return;
+    }
+    semi[1] = '\0';
+
+    if(!starts_with_word(decl, "typedef")
+        && strchr(decl, '{') == NULL
+        && !is_named_forward_declaration(decl)) {
+        return;
+    }
+    if(prototype_already_added(generated, decl)) {
+        return;
+    }
+    append_text(generated, generated_size, decl);
+    append_text(generated, generated_size, "\n");
+}
+
+static void collect_type_declarations_from_source(const char* src,
+    char* generated, size_t generated_size)
+{
+    FILE* fp = fopen(src, "r");
+    char line[2048];
+    char candidate[VALUE_MAX_LEN * 4];
+    int brace_depth = 0;
+    int type_brace_depth = 0;
+    int collecting = 0;
+
+    candidate[0] = '\0';
+    if(fp == NULL) {
+        return;
+    }
+
+    while(fgets(line, sizeof(line), fp) != NULL) {
+        char* s;
+        strip_line_comment(line);
+        s = trim(line);
+
+        if(brace_depth == 0 || collecting) {
+            if(!collecting) {
+                candidate[0] = '\0';
+                type_brace_depth = 0;
+                if(s[0] == '\0' || s[0] == '#') {
+                    brace_depth += count_braces_in_line(s);
+                    continue;
+                }
+                if(!starts_type_declaration(s)) {
+                    brace_depth += count_braces_in_line(s);
+                    continue;
+                }
+            }
+
+            if(strlen(candidate) + strlen(s) + 2 < sizeof(candidate)) {
+                if(candidate[0] != '\0') {
+                    strcat(candidate, " ");
+                }
+                strcat(candidate, s);
+            }
+            type_brace_depth += count_braces_in_line(s);
+            collecting = 1;
+            if(find_top_level_semicolon(candidate) != NULL && type_brace_depth == 0) {
+                append_type_declaration(generated, generated_size, candidate);
+                collecting = 0;
+                candidate[0] = '\0';
+                type_brace_depth = 0;
+            }
+        }
+
+        brace_depth += count_braces_in_line(s);
+        if(!collecting && brace_depth < 0) {
+            brace_depth = 0;
+        }
+        if(!collecting && brace_depth == 0) {
+            candidate[0] = '\0';
+        }
+    }
+    fclose(fp);
+}
+
+static void append_function_prototype(char* generated, size_t generated_size,
+    const char* candidate)
+{
+    char proto[VALUE_MAX_LEN * 4];
+    char name[128];
+    char* lp;
+    char* rp;
+    char* eq;
+    size_t n;
+
+    strncpy(proto, candidate, sizeof(proto) - 1);
+    proto[sizeof(proto) - 1] = '\0';
+    normalize_space(proto);
+
+    lp = strchr(proto, '(');
+    rp = strrchr(proto, ')');
+    if(lp == NULL || rp == NULL || rp < lp) {
+        return;
+    }
+    eq = strchr(proto, '=');
+    if(eq != NULL && eq < lp) {
+        return;
+    }
+    if(strncmp(proto, "static ", 7) == 0 || strstr(proto, " static ") != NULL) {
+        return;
+    }
+    if(strncmp(proto, "extern ", 7) == 0) {
+        return;
+    }
+    if(is_control_like_signature(proto)) {
+        return;
+    }
+    if(!extract_function_name(proto, name, sizeof(name))) {
+        return;
+    }
+    if(strcmp(name, "main") == 0) {
+        return;
+    }
+
+    n = (size_t)(rp - proto + 1);
+    proto[n] = '\0';
+    strcat(proto, ";\n");
+    if(prototype_already_added(generated, proto)) {
+        return;
+    }
+    append_text(generated, generated_size, proto);
+}
+
+static void collect_function_prototypes_from_source(const char* src,
+    char* generated, size_t generated_size)
+{
+    FILE* fp = fopen(src, "r");
+    char line[2048];
+    char candidate[VALUE_MAX_LEN * 4];
+    int brace_depth = 0;
+    int collecting = 0;
+
+    candidate[0] = '\0';
+    if(fp == NULL) {
+        return;
+    }
+
+    while(fgets(line, sizeof(line), fp) != NULL) {
+        char* s;
+        char* open_brace;
+        char* semi;
+        strip_line_comment(line);
+        s = trim(line);
+
+        if(brace_depth == 0) {
+            if(!collecting) {
+                candidate[0] = '\0';
+                if(s[0] == '\0' || s[0] == '#') {
+                    brace_depth += count_braces_in_line(s);
+                    continue;
+                }
+                if(strchr(s, '(') == NULL) {
+                    brace_depth += count_braces_in_line(s);
+                    continue;
+                }
+            }
+
+            if(strlen(candidate) + strlen(s) + 2 < sizeof(candidate)) {
+                if(candidate[0] != '\0') {
+                    strcat(candidate, " ");
+                }
+                strcat(candidate, s);
+            }
+            collecting = 1;
+            open_brace = strchr(candidate, '{');
+            semi = strchr(candidate, ';');
+            if(semi != NULL && (open_brace == NULL || semi < open_brace)) {
+                collecting = 0;
+                candidate[0] = '\0';
+            }
+            else if(open_brace != NULL) {
+                *open_brace = '\0';
+                append_function_prototype(generated, generated_size, candidate);
+                collecting = 0;
+                candidate[0] = '\0';
+            }
+        }
+
+        brace_depth += count_braces_in_line(s);
+        if(brace_depth < 0) {
+            brace_depth = 0;
+        }
+    }
+    fclose(fp);
+}
+
+static void generate_common_header(struct SourceList* sources, const struct Manifest* m)
+{
+    char text[COMMON_HEADER_MAX_LEN];
+    int i;
+    (void)m;
+
+    text[0] = '\0';
+    append_text(text, sizeof(text), "#ifndef CPM_COMMON_H\n");
+    append_text(text, sizeof(text), "#define CPM_COMMON_H\n\n");
+    append_text(text, sizeof(text), "#include <neo-c.h>\n\n");
+    append_text(text, sizeof(text), "// This file is generated by cpm build from src/*.nc.\n");
+    append_text(text, sizeof(text), "// Put manual shared declarations in a separate header and include it from source files.\n\n");
+
+    for(i = 0; i < sources->count; i++) {
+        if(strncmp(sources->path[i], "src/", 4) != 0 || !has_suffix(sources->path[i], ".nc")) {
+            continue;
+        }
+        collect_type_declarations_from_source(sources->path[i], text, sizeof(text));
+    }
+
+    for(i = 0; i < sources->count; i++) {
+        if(strncmp(sources->path[i], "src/", 4) != 0 || !has_suffix(sources->path[i], ".nc")) {
+            continue;
+        }
+        collect_function_prototypes_from_source(sources->path[i], text, sizeof(text));
+    }
+
+    append_text(text, sizeof(text), "\n#endif\n");
+    write_file("src/common.h", text);
+}
+
 static void generated_c_path(char* out, size_t out_size, const char* obj_path)
 {
     size_t len;
@@ -978,6 +1439,9 @@ static void restore_build_jobs(struct BuildJob* jobs, int count)
 {
     int i;
     for(i = 0; i < count; i++) {
+        if(jobs[i].generated_base[0] == '\0') {
+            continue;
+        }
         restore_generated_file(jobs[i].generated_base, jobs[i].backup_path);
     }
 }
@@ -986,6 +1450,9 @@ static int move_build_jobs(struct BuildJob* jobs, int count)
 {
     int i;
     for(i = 0; i < count; i++) {
+        if(jobs[i].generated_base[0] == '\0') {
+            continue;
+        }
         if(move_generated_file(jobs[i].generated_base, jobs[i].c_path, jobs[i].backup_path) != 0) {
             return 1;
         }
@@ -1105,16 +1572,16 @@ static int cmd_build_parallel_with_flags(const char* extra_flags, int optimize,
     if(include_lib_runtime) {
         char q_runtime_src[PATH_MAX_LEN * 2];
         char q_runtime_obj[PATH_MAX_LEN * 2];
+        char q_runtime_c[PATH_MAX_LEN * 2];
         shell_quote(q_runtime_src, sizeof(q_runtime_src), "lib/neo-c-str.nc");
         shell_quote(q_runtime_obj, sizeof(q_runtime_obj), "target/debug/neo-c-str.o");
-        strcpy(jobs[job_count].generated_base, "neo-c-str.c");
         strcpy(jobs[job_count].c_path, "target/debug/neo-c-str.c");
-        backup_generated_file(jobs[job_count].generated_base,
-            jobs[job_count].backup_path, sizeof(jobs[job_count].backup_path));
+        jobs[job_count].generated_base[0] = '\0';
+        shell_quote(q_runtime_c, sizeof(q_runtime_c), jobs[job_count].c_path);
         snprintf(jobs[job_count].cmd, sizeof(jobs[job_count].cmd),
-            "%s %s %s %s -c -uniq %s -o %s",
+            "%s %s %s %s -c -uniq -c-out %s %s -o %s",
             q_neoc, m->neoc_flags, extra_flags == NULL ? "" : extra_flags,
-            optimize ? DEFAULT_SIZE_FLAGS : "", q_runtime_src, q_runtime_obj);
+            optimize ? DEFAULT_SIZE_FLAGS : "", q_runtime_c, q_runtime_src, q_runtime_obj);
         job_count++;
     }
 
@@ -1123,30 +1590,29 @@ static int cmd_build_parallel_with_flags(const char* extra_flags, int optimize,
         char build_src[PATH_MAX_LEN];
         char q_src[PATH_MAX_LEN * 2];
         char q_obj[PATH_MAX_LEN * 2];
+        char q_c_path[PATH_MAX_LEN * 2];
 
         object_path(obj_path_buf, sizeof(obj_path_buf), sources->path[i], m);
-        generated_c_basename(jobs[job_count].generated_base,
-            sizeof(jobs[job_count].generated_base), sources->path[i]);
         generated_c_path(jobs[job_count].c_path, sizeof(jobs[job_count].c_path),
             obj_path_buf);
+        jobs[job_count].generated_base[0] = '\0';
         ensure_parent_dir(obj_path_buf);
         ensure_parent_dir(jobs[job_count].c_path);
         prepare_source_path(build_src, sizeof(build_src), sources->path[i]);
         shell_quote(q_src, sizeof(q_src), build_src);
         shell_quote(q_obj, sizeof(q_obj), obj_path_buf);
-        backup_generated_file(jobs[job_count].generated_base,
-            jobs[job_count].backup_path, sizeof(jobs[job_count].backup_path));
+        shell_quote(q_c_path, sizeof(q_c_path), jobs[job_count].c_path);
         if(is_runtime_source(sources->path[i])) {
             snprintf(jobs[job_count].cmd, sizeof(jobs[job_count].cmd),
-                "%s %s %s %s -c -uniq %s -o %s",
+                "%s %s %s %s -c -uniq -c-out %s %s -o %s",
                 q_neoc, m->neoc_flags, extra_flags == NULL ? "" : extra_flags,
-                optimize ? DEFAULT_SIZE_FLAGS : "", q_src, q_obj);
+                optimize ? DEFAULT_SIZE_FLAGS : "", q_c_path, q_src, q_obj);
         }
         else {
             snprintf(jobs[job_count].cmd, sizeof(jobs[job_count].cmd),
-                "%s %s %s %s -c %s -o %s",
+                "%s %s %s %s -c -c-out %s %s -o %s",
                 q_neoc, m->neoc_flags, extra_flags == NULL ? "" : extra_flags,
-                optimize ? DEFAULT_SIZE_FLAGS : "", q_src, q_obj);
+                optimize ? DEFAULT_SIZE_FLAGS : "", q_c_path, q_src, q_obj);
         }
         job_count++;
     }
@@ -1198,11 +1664,10 @@ static int cmd_bare_build_parallel_with_flags(const char* extra_flags, int optim
         char q_obj[PATH_MAX_LEN * 2];
 
         object_path(obj_path_buf, sizeof(obj_path_buf), sources->path[i], m);
-        generated_c_basename(transpile_jobs[i].generated_base,
-            sizeof(transpile_jobs[i].generated_base), sources->path[i]);
         generated_c_path(transpile_jobs[i].c_path, sizeof(transpile_jobs[i].c_path),
             obj_path_buf);
-        strcpy(compile_jobs[i].generated_base, transpile_jobs[i].generated_base);
+        transpile_jobs[i].generated_base[0] = '\0';
+        compile_jobs[i].generated_base[0] = '\0';
         strcpy(compile_jobs[i].c_path, transpile_jobs[i].c_path);
         ensure_parent_dir(obj_path_buf);
         ensure_parent_dir(transpile_jobs[i].c_path);
@@ -1210,11 +1675,9 @@ static int cmd_bare_build_parallel_with_flags(const char* extra_flags, int optim
         shell_quote(q_src, sizeof(q_src), build_src);
         shell_quote(q_c_path, sizeof(q_c_path), transpile_jobs[i].c_path);
         shell_quote(q_obj, sizeof(q_obj), obj_path_buf);
-        backup_generated_file(transpile_jobs[i].generated_base,
-            transpile_jobs[i].backup_path, sizeof(transpile_jobs[i].backup_path));
         snprintf(transpile_jobs[i].cmd, sizeof(transpile_jobs[i].cmd),
-            "%s %s %s -bare -S %s",
-            q_neoc, m->neoc_flags, extra_flags == NULL ? "" : extra_flags, q_src);
+            "%s %s %s -bare -S -c-out %s %s",
+            q_neoc, m->neoc_flags, extra_flags == NULL ? "" : extra_flags, q_c_path, q_src);
         snprintf(compile_jobs[i].cmd, sizeof(compile_jobs[i].cmd),
             "%s %s -c %s -o %s",
             q_cc, m->cflags, q_c_path, q_obj);
@@ -1256,31 +1719,23 @@ static int cmd_bare_build_with_flags(const char* extra_flags, int optimize,
 
     for(i = 0; i < sources->count; i++) {
         char obj_path_buf[PATH_MAX_LEN];
-        char generated_base[PATH_MAX_LEN];
         char c_path_buf[PATH_MAX_LEN];
         char build_src[PATH_MAX_LEN];
         char q_src[PATH_MAX_LEN * 2];
-        char q_generated_base[PATH_MAX_LEN * 2];
         char q_c_path[PATH_MAX_LEN * 2];
         char q_obj[PATH_MAX_LEN * 2];
 
         object_path(obj_path_buf, sizeof(obj_path_buf), sources->path[i], m);
-        generated_c_basename(generated_base, sizeof(generated_base), sources->path[i]);
         generated_c_path(c_path_buf, sizeof(c_path_buf), obj_path_buf);
         ensure_parent_dir(obj_path_buf);
         ensure_parent_dir(c_path_buf);
         prepare_source_path(build_src, sizeof(build_src), sources->path[i]);
         shell_quote(q_src, sizeof(q_src), build_src);
-        shell_quote(q_generated_base, sizeof(q_generated_base), generated_base);
         shell_quote(q_c_path, sizeof(q_c_path), c_path_buf);
         shell_quote(q_obj, sizeof(q_obj), obj_path_buf);
 
-        snprintf(cmd, sizeof(cmd), "%s %s %s -bare -S %s",
-            q_neoc, m->neoc_flags, extra_flags == NULL ? "" : extra_flags, q_src);
-        if(run_cmd(cmd) != 0) {
-            return 1;
-        }
-        snprintf(cmd, sizeof(cmd), "mv %s %s", q_generated_base, q_c_path);
+        snprintf(cmd, sizeof(cmd), "%s %s %s -bare -S -c-out %s %s",
+            q_neoc, m->neoc_flags, extra_flags == NULL ? "" : extra_flags, q_c_path, q_src);
         if(run_cmd(cmd) != 0) {
             return 1;
         }
@@ -1370,7 +1825,7 @@ static void write_common_header(void)
         "\n"
         "#include <neo-c.h>\n"
         "\n"
-        "/* Put declarations shared by src/*.nc files here. */\n"
+        "// This file is generated by cpm build from src/*.nc.\n"
         "\n"
         "#endif\n");
 }
@@ -1440,6 +1895,7 @@ static int cmd_build_with_flags(const char* extra_flags, int optimize)
     build_extra_flags(neoc_extra_flags, sizeof(neoc_extra_flags), extra_flags, &m);
     mkdir_p("target/debug");
     collect_manifest_sources(&sources, &m);
+    generate_common_header(&sources, &m);
     shell_quote(q_neoc, sizeof(q_neoc), m.neoc);
 
     if(m.bare) {
@@ -1463,58 +1919,48 @@ static int cmd_build_with_flags(const char* extra_flags, int optimize)
 
     if(file_exists("lib/neo-c-str.nc")) {
         char runtime_c_path[PATH_MAX_LEN];
-        char runtime_backup_path[PATH_MAX_LEN];
         char q_runtime_src[PATH_MAX_LEN * 2];
         char q_runtime_obj[PATH_MAX_LEN * 2];
+        char q_runtime_c[PATH_MAX_LEN * 2];
         shell_quote(q_runtime_src, sizeof(q_runtime_src), "lib/neo-c-str.nc");
         shell_quote(q_runtime_obj, sizeof(q_runtime_obj), "target/debug/neo-c-str.o");
         strcpy(runtime_c_path, "target/debug/neo-c-str.c");
-        backup_generated_file("neo-c-str.c", runtime_backup_path, sizeof(runtime_backup_path));
-        snprintf(cmd, sizeof(cmd), "%s %s %s %s -c -uniq %s -o %s",
+        shell_quote(q_runtime_c, sizeof(q_runtime_c), runtime_c_path);
+        snprintf(cmd, sizeof(cmd), "%s %s %s %s -c -uniq -c-out %s %s -o %s",
             q_neoc, m.neoc_flags, neoc_extra_flags,
-            optimize ? DEFAULT_SIZE_FLAGS : "", q_runtime_src, q_runtime_obj);
+            optimize ? DEFAULT_SIZE_FLAGS : "", q_runtime_c, q_runtime_src, q_runtime_obj);
         if(run_cmd(cmd) != 0) {
-            restore_generated_file("neo-c-str.c", runtime_backup_path);
-            return 1;
-        }
-        if(move_generated_file("neo-c-str.c", runtime_c_path, runtime_backup_path) != 0) {
             return 1;
         }
     }
 
     for(i = 0; i < sources.count; i++) {
         char obj_path_buf[PATH_MAX_LEN];
-        char generated_base[PATH_MAX_LEN];
         char c_path_buf[PATH_MAX_LEN];
-        char backup_path[PATH_MAX_LEN];
         char build_src[PATH_MAX_LEN];
         char q_src[PATH_MAX_LEN * 2];
         char q_obj[PATH_MAX_LEN * 2];
+        char q_c_path[PATH_MAX_LEN * 2];
 
         object_path(obj_path_buf, sizeof(obj_path_buf), sources.path[i], &m);
-        generated_c_basename(generated_base, sizeof(generated_base), sources.path[i]);
         generated_c_path(c_path_buf, sizeof(c_path_buf), obj_path_buf);
         ensure_parent_dir(obj_path_buf);
         ensure_parent_dir(c_path_buf);
         prepare_source_path(build_src, sizeof(build_src), sources.path[i]);
         shell_quote(q_src, sizeof(q_src), build_src);
         shell_quote(q_obj, sizeof(q_obj), obj_path_buf);
-        backup_generated_file(generated_base, backup_path, sizeof(backup_path));
+        shell_quote(q_c_path, sizeof(q_c_path), c_path_buf);
         if(is_runtime_source(sources.path[i])) {
-            snprintf(cmd, sizeof(cmd), "%s %s %s %s -c -uniq %s -o %s",
+            snprintf(cmd, sizeof(cmd), "%s %s %s %s -c -uniq -c-out %s %s -o %s",
                 q_neoc, m.neoc_flags, neoc_extra_flags,
-                optimize ? DEFAULT_SIZE_FLAGS : "", q_src, q_obj);
+                optimize ? DEFAULT_SIZE_FLAGS : "", q_c_path, q_src, q_obj);
         }
         else {
-            snprintf(cmd, sizeof(cmd), "%s %s %s %s -c %s -o %s",
+            snprintf(cmd, sizeof(cmd), "%s %s %s %s -c -c-out %s %s -o %s",
                 q_neoc, m.neoc_flags, neoc_extra_flags,
-                optimize ? DEFAULT_SIZE_FLAGS : "", q_src, q_obj);
+                optimize ? DEFAULT_SIZE_FLAGS : "", q_c_path, q_src, q_obj);
         }
         if(run_cmd(cmd) != 0) {
-            restore_generated_file(generated_base, backup_path);
-            return 1;
-        }
-        if(move_generated_file(generated_base, c_path_buf, backup_path) != 0) {
             return 1;
         }
     }

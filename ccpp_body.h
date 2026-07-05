@@ -5044,6 +5044,11 @@ static void preprocess(FILE *in, FILE *out, const PPOpts *opts, const char *curd
             outln = next;
             if (same) break;
         }
+        // Macro expansion strips comments, so keep the global block-comment
+        // depth synchronized from the original source line. Otherwise a
+        // one-line block comment can leave following directives hidden.
+        g_block_comment_depth = line_bl_start;
+        scan_comment_depth(raw, &g_block_comment_depth);
         // Darwin-specific fallback: if some headers referenced _CACHED_RUNES as
         // an enum constant rather than macro, downstream non-C compilers may
         // fail. If we still see the token here, replace occurrences in code

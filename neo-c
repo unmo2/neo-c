@@ -28,10 +28,12 @@ ncc_opts=()
 libs=()
 obj_files=()
 target=""
+c_output=""
 no_rm_pp=true
 bare=false
 
 expect_target=false
+expect_c_output=false
 expect_include=false
 compile_only=false
 all_object_file=true
@@ -46,6 +48,11 @@ for arg in "$@"; do
   if [ "$expect_target" = true ]; then
     target="$arg"
     expect_target=false
+    continue
+  fi
+  if [ "$expect_c_output" = true ]; then
+    c_output="$arg"
+    expect_c_output=false
     continue
   fi
   if [ "$expect_include" = true ]; then
@@ -165,6 +172,9 @@ for arg in "$@"; do
     -o)
       expect_target=true
       ;;
+    -c-out)
+      expect_c_output=true
+      ;;
     -include)
       expect_include=true
       ;;
@@ -261,15 +271,23 @@ fi
 
 transpile_ok=$?
 
+generated_c="${cbase}.c"
+compile_c="$generated_c"
+if [ "$transpile_ok" = 0 ] && [ -n "$c_output" ] && [ -f "$generated_c" ]; then
+  mkdir -p "$(dirname "$c_output")"
+  mv -f "$generated_c" "$c_output"
+  compile_c="$c_output"
+fi
+
 neo_c_str_args=()
 regex_runtime_pattern='string_scan|string_match|charp_scan|charp_match|charp_index_regex|string_index_regex|charp_split|string_split|re_match'
-if [ -f "${cbase}.c" ]; then
+if [ -f "$compile_c" ]; then
   link_neo_c_str=false
   if command -v rg >/dev/null 2>&1; then
-    if rg -q "$regex_runtime_pattern" "${cbase}.c"; then
+    if rg -q "$regex_runtime_pattern" "$compile_c"; then
       link_neo_c_str=true
     fi
-  elif grep -Eq "$regex_runtime_pattern" "${cbase}.c"; then
+  elif grep -Eq "$regex_runtime_pattern" "$compile_c"; then
     link_neo_c_str=true
   fi
 
@@ -322,8 +340,8 @@ then
             target=${base}.o
         fi
 
-        echo $CC $CFLAGS "${bare_cflags[@]}" "${include_opts[@]}" -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/boehmgc/lib -L/opt/homebrew/opt/zstd/lib -I/opt/homebrew/opt/openssl/include -L/opt/homebrew/opt/ncurses/lib -c "${opts[@]}" -ffunction-sections -fdata-sections "${link_gc_sections}" -flto=thin -o "${target}" "${cbase}.c" "${libs[@]}"
-        if $CC $CFLAGS "${bare_cflags[@]}" "${include_opts[@]}" -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/boehmgc/lib -L/opt/homebrew/opt/zstd/lib -I/opt/homebrew/opt/openssl/include -L/opt/homebrew/opt/ncurses/lib -c "${opts[@]}" -ffunction-sections -fdata-sections "${link_gc_sections}" -flto=thin -o "${target}" "${cbase}.c" "${libs[@]}" 2> "${base}.c.error"
+        echo $CC $CFLAGS "${bare_cflags[@]}" "${include_opts[@]}" -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/boehmgc/lib -L/opt/homebrew/opt/zstd/lib -I/opt/homebrew/opt/openssl/include -L/opt/homebrew/opt/ncurses/lib -c "${opts[@]}" -ffunction-sections -fdata-sections "${link_gc_sections}" -flto=thin -o "${target}" "$compile_c" "${libs[@]}"
+        if $CC $CFLAGS "${bare_cflags[@]}" "${include_opts[@]}" -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/boehmgc/lib -L/opt/homebrew/opt/zstd/lib -I/opt/homebrew/opt/openssl/include -L/opt/homebrew/opt/ncurses/lib -c "${opts[@]}" -ffunction-sections -fdata-sections "${link_gc_sections}" -flto=thin -o "${target}" "$compile_c" "${libs[@]}" 2> "${base}.c.error"
         then
             rm -f "${base}.c.error"
             if test $no_rm_pp = true
@@ -339,8 +357,8 @@ then
             target=${base}
         fi
 
-        echo $CC $CFLAGS "${bare_cflags[@]}" "${include_opts[@]}" -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/boehmgc/lib -L/opt/homebrew/opt/zstd/lib -I/opt/homebrew/opt/openssl/include "${opts[@]}" -ffunction-sections -fdata-sections "${link_gc_sections}" -flto=thin -L/opt/homebrew/opt/ncurses/lib "${bare_link_opts[@]}" -o "${target}" "${cbase}.c" "${obj_files[@]}" "${libs[@]}" "${neo_c_str_args[@]}"
-        if $CC $CFLAGS "${bare_cflags[@]}" "${include_opts[@]}" -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/boehmgc/lib -L/opt/homebrew/opt/zstd/lib -I/opt/homebrew/opt/openssl/include "${opts[@]}" -ffunction-sections -fdata-sections "${link_gc_sections}" -flto=thin -L/opt/homebrew/opt/ncurses/lib "${bare_link_opts[@]}" -o "${target}" "${cbase}.c" "${obj_files[@]}" "${libs[@]}" "${neo_c_str_args[@]}" 2> "${base}.c.error"
+        echo $CC $CFLAGS "${bare_cflags[@]}" "${include_opts[@]}" -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/boehmgc/lib -L/opt/homebrew/opt/zstd/lib -I/opt/homebrew/opt/openssl/include "${opts[@]}" -ffunction-sections -fdata-sections "${link_gc_sections}" -flto=thin -L/opt/homebrew/opt/ncurses/lib "${bare_link_opts[@]}" -o "${target}" "$compile_c" "${obj_files[@]}" "${libs[@]}" "${neo_c_str_args[@]}"
+        if $CC $CFLAGS "${bare_cflags[@]}" "${include_opts[@]}" -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/boehmgc/lib -L/opt/homebrew/opt/zstd/lib -I/opt/homebrew/opt/openssl/include "${opts[@]}" -ffunction-sections -fdata-sections "${link_gc_sections}" -flto=thin -L/opt/homebrew/opt/ncurses/lib "${bare_link_opts[@]}" -o "${target}" "$compile_c" "${obj_files[@]}" "${libs[@]}" "${neo_c_str_args[@]}" 2> "${base}.c.error"
         then
             strip_output_executable "${target}"
             rm -f "${base}.c.error"

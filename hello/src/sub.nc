@@ -1,6 +1,6 @@
-#include <neo-c.h>
+struct xxx { int a; int b; };
 
-string fun()
+string fin()
 {
     return s"aaa";
 }

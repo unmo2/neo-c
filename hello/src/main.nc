@@ -2,6 +2,7 @@
 
 int main(int argc, char** argv)
 {
-    puts(fun());
+    struct xxx yyy;
+    puts(fin());
     return 0;
 }
