@@ -10,3 +10,4 @@ neoc = "neo-c"
 neoc_flags = "-I. -Ilib"
 ldflags = ""
 strip = true
+common_header = false

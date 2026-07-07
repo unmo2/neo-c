@@ -8,3 +8,4 @@ sources = "src/00web.nc src/01main.nc"
 out = "target/debug/cinatora"
 neoc_flags = "-I. -Ilib"
 ldflags = ""
+common_header = false

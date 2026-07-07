@@ -6,6 +6,7 @@ version = "1.0.5"
 src = "src/main.nc"
 sources = "src/main.nc src/01init.nc src/02base.nc src/03insert_mode.nc src/04word.nc src/05undo.nc src/06file.nc src/07yank.nc src/08visual.nc src/09search.nc src/10edit.nc src/11move.nc src/12command.nc src/13completion.nc src/14dot.nc src/16mark.nc src/17hvisual.nc src/18vvisual.nc src/19rewrite_mode.nc src/21binary_mode.nc"
 out = "target/debug/vin"
+common_header = false
 neoc = "neo-c"
 neoc_flags = "-I. -Ilib -I/usr/local/include -I/opt/homebrew/opt/ncurses/include -I/usr/local/opt/ncurses/include"
 ldflags = "-L/opt/local/lib -L/usr/local/lib -L/opt/homebrew/opt/ncurses/lib -L/usr/local/opt/ncurses/lib -ldl -lm -lncursesw"
