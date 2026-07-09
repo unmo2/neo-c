@@ -23,12 +23,14 @@ int main(int argc, char** argv)
                                          ")";
         client_socket2(port:3366, create_table_query)!;
 
-        string query = s"SELECT username, password FROM users WHERE username = '\{username}'";
+        string safe_username = username.sub_plain("'", "''");
+        string safe_password = password.sub_plain("'", "''");
+        string query = s"SELECT username, password FROM users WHERE username = '\{safe_username}'";
         string read_data = client_socket2(port:3366, query)!;
         list<string>*% li = read_data.scan("\n");
 
         if(li.length() == 1 && li[0].chomp() === "") {
-            client_socket2(port:3366, s"INSERT INTO users(username, password) VALUES('\{username}', '\{password}')")!;
+            client_socket2(port:3366, s"INSERT INTO users(username, password) VALUES('\{safe_username}', '\{safe_password}')")!;
     
             string redirect_response = """
 HTTP/1.1 302 Found\r
