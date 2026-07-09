@@ -14,7 +14,14 @@ int main(int argc, char** argv)
     if (cookie) {
         sscanf(cookie, "username=%1023[^;]", username);
     }
-    
+
+    for(int i = 0; username[i] != '\0'; i++) {
+        if(username[i] == '\'' || username[i] == '\\' || username[i] == '"') {
+            username[0] = '\0';
+            break;
+        }
+    }
+
     if(username[0] != '\0') {
         const char *query1 = "CREATE DATABASE testdb";
         client_socket2(port:3366, query1)!;
